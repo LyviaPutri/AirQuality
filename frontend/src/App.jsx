@@ -13,7 +13,7 @@ import './App.css';
 // Ambang peringatan dini internal sesuai Progress Report 2 (35 µg/m³)
 const DANGER_THRESHOLD = 35;
 
-// Data pratinjau awal (1 Jam, 2 Jam, 3 Jam) sebelum backend terhubung
+// Data pratinjau awal (1 jam, 2 jam, 3 jam) sebelum backend terhubung
 const INITIAL_PREVIEW_DATA = {
   current_pm25: 24,
   predictions: [
@@ -26,7 +26,6 @@ const INITIAL_PREVIEW_DATA = {
 function App() {
   const [polutanFile, setPolutanFile] = useState(null);
   const [cuacaFile, setCuacaFile] = useState(null);
-  const [selectedHour, setSelectedHour] = useState(3); // Default 3 Jam
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [currentDate, setCurrentDate] = useState('');
@@ -64,7 +63,6 @@ function App() {
       const formData = new FormData();
       formData.append('file_polutan', polutanFile);
       formData.append('file_cuaca', cuacaFile);
-      formData.append('horizon', String(selectedHour));
 
       const response = await fetch('/api/predict', {
         method: 'POST',
@@ -96,17 +94,19 @@ function App() {
     }
   };
 
-  // Ambil data prediksi sesuai jam yang dipilih di dropdown
+  // Hitung ringkasan otomatis dari seluruh horizon (1 jam s.d. 3 jam ke depan)
   const predictions = forecastData.predictions;
   const currentPm25 = forecastData.current_pm25;
-  const selectedItem =
-    predictions.find((p) => p.hour === selectedHour) || predictions[predictions.length - 1];
+  const peakItem = predictions.reduce(
+    (max, item) => (item.value > max.value ? item : max),
+    predictions[0]
+  );
 
   const deltaPercent =
     currentPm25 > 0
-      ? Math.round(((selectedItem.value - currentPm25) / currentPm25) * 100)
+      ? Math.round(((peakItem.value - currentPm25) / currentPm25) * 100)
       : 0;
-  const isDanger = selectedItem.value >= DANGER_THRESHOLD;
+  const isDanger = peakItem.value >= DANGER_THRESHOLD;
 
   // Kalkulasi koordinat SVG otomatis
   const maxVal = Math.max(DANGER_THRESHOLD, ...predictions.map((p) => p.value));
@@ -236,7 +236,7 @@ function App() {
                 <div className="number-badge">3</div>
                 <div className="card-title-box">
                   <h3>Panel Himbauan Publik</h3>
-                  <p>Ringkasan peringatan dini ({selectedHour} Jam ke depan)</p>
+                  <p>Ringkasan peringatan dini 3 jam ke depan</p>
                 </div>
               </div>
 
@@ -256,7 +256,7 @@ function App() {
                 </div>
                 <p>
                   <strong>
-                    Prediksi {selectedHour} Jam: {selectedItem.value} µg/m³
+                    Prediksi tertinggi: {peakItem.value} µg/m³ ({peakItem.hour} jam ke depan)
                   </strong>
                 </p>
                 <p>
@@ -287,17 +287,6 @@ function App() {
                     <p>Proyeksi konsentrasi partikulat 1 hingga 3 jam ke depan</p>
                   </div>
                 </div>
-                <div className="dropdown-container">
-                  Pilih Horizon:
-                  <select
-                    value={selectedHour}
-                    onChange={(e) => setSelectedHour(Number(e.target.value))}
-                  >
-                    <option value={1}>1 Jam</option>
-                    <option value={2}>2 Jam</option>
-                    <option value={3}>3 Jam</option>
-                  </select>
-                </div>
               </div>
 
               <div className="metrics-grid">
@@ -309,9 +298,9 @@ function App() {
                   </h2>
                 </div>
                 <div className="metric-item">
-                  <p>Prediksi ({selectedHour} Jam)</p>
+                  <p>Prediksi tertinggi (3 jam)</p>
                   <h2 className={isDanger ? 'text-red' : 'text-green'}>
-                    {selectedItem.value}{' '}
+                    {peakItem.value}{' '}
                     <span
                       style={{
                         fontSize: '0.8rem',
@@ -321,6 +310,9 @@ function App() {
                       µg/m³
                     </span>
                   </h2>
+                  <span className="metric-sub">
+                    Terjadi pada {peakItem.hour} jam ke depan
+                  </span>
                 </div>
                 <div className="metric-item">
                   <p>Perubahan prediksi</p>
@@ -339,7 +331,7 @@ function App() {
                 </div>
               </div>
 
-              {/* Grafik SVG (1 Jam, 2 Jam, 3 Jam) */}
+              {/* Grafik SVG (1 jam, 2 jam, 3 jam) */}
               <div className="chart-placeholder">
                 <svg
                   width="100%"
@@ -423,14 +415,13 @@ function App() {
                     const cx = xCoords[i];
                     const cy = getY(item.value);
                     const pointDanger = item.value >= DANGER_THRESHOLD;
-                    const isSelected = item.hour === selectedHour;
                     return (
                       <g key={item.hour}>
                         <text
                           x={cx}
                           y={cy - 14}
                           fill={pointDanger ? '#dc2626' : '#334155'}
-                          fontSize={isSelected ? '14' : '12'}
+                          fontSize="13"
                           fontWeight="bold"
                           textAnchor="middle"
                         >
@@ -439,20 +430,20 @@ function App() {
                         <circle
                           cx={cx}
                           cy={cy}
-                          r={isSelected ? 7 : 5}
-                          fill={isSelected ? (pointDanger ? '#dc2626' : '#2563eb') : 'white'}
+                          r={pointDanger ? 6 : 5}
+                          fill="white"
                           stroke={pointDanger ? '#dc2626' : '#2563eb'}
-                          strokeWidth="3"
+                          strokeWidth={pointDanger ? 4 : 3}
                         />
                         <text
                           x={cx}
                           y="218"
-                          fill={isSelected ? '#0f172a' : '#64748b'}
+                          fill="#475569"
                           fontSize="13"
-                          fontWeight={isSelected ? '700' : '500'}
+                          fontWeight="600"
                           textAnchor="middle"
                         >
-                          {item.hour} Jam
+                          {item.hour} jam
                         </text>
                       </g>
                     );
@@ -465,7 +456,7 @@ function App() {
                     fontSize="12"
                     textAnchor="middle"
                   >
-                    Horizon Prediksi (Jam ke Depan)
+                    Horizon Prediksi (n jam = n jam ke depan)
                   </text>
                 </svg>
               </div>
@@ -528,4 +519,3 @@ function App() {
 }
 
 export default App;
-
