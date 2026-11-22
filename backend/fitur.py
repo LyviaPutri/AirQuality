@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-HORIZONS = [1, 2, 3, 4, 5, 6]   # jam ke depan
+HORIZONS = [1, 2, 3]   # horizon prediksi (jam ke depan)
 LAGS = [1, 2, 3, 6, 12, 24, 48, 72, 168]
 POLUTAN = ['pm10', 'pm2_5', 'co', 'no2', 'so2', 'o3']
 CUACA = ['temp', 'rh', 'hujan', 'angin', 'arah_angin', 'tekanan']
@@ -71,14 +71,17 @@ def fitur_cuaca(d):
     return pd.DataFrame(f, index=d.index)
 
 
-def buat_fitur(d):
-    """Tabel fitur lengkap (119 fitur: 89 polutan + 30 cuaca). Dipakai pelatihan dan dashboard."""
-    return pd.concat([fitur_polutan(d), fitur_cuaca(d)], axis=1)
+def buat_fitur(d, cuaca=True):
+    """Tabel fitur lengkap. cuaca=False menghasilkan 89 fitur polutan saja."""
+    f = fitur_polutan(d)
+    if cuaca:
+        f = pd.concat([f, fitur_cuaca(d)], axis=1)
+    return f
 
 
 class Kalibrator:
-    """Kalibrasi probabilitas dengan isotonic regression. Disimpan di fitur.py agar
-    model .joblib bisa dimuat dashboard (joblib perlu menemukan kelas ini)."""
+    """Kalibrasi probabilitas (isotonic). Disimpan di fitur.py agar joblib
+    menemukan kelas ini saat model dimuat oleh dashboard/backend."""
     def fit(self, p, y):
         from sklearn.isotonic import IsotonicRegression
         self.m = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip').fit(

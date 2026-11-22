@@ -10,20 +10,78 @@ import {
 } from 'lucide-react';
 import './App.css';
 
+
+ // URL API Flask Backend
+const API_URL = 'http://127.0.0.1:5000/predict';
 // Ambang peringatan dini internal sesuai Progress Report 2 (35 µg/m³)
 const DANGER_THRESHOLD = 35;
 
-// Data pratinjau awal (1 jam, 2 jam, 3 jam) sebelum backend terhubung
+// Data pratinjau awal (1 jam, 2 jam, 3 jam) sebelum backend mengembalikan hasil baru
 const INITIAL_PREVIEW_DATA = {
   current_pm25: 24,
   predictions: [
-    { hour: 1, value: 31 },
-    { hour: 2, value: 39 },
-    { hour: 3, value: 48 },
+    { hour: 1, value: 31, kategori: 'Sedang', alarm: false, probabilitas: null, rekomendasi: null },
+    { hour: 2, value: 39, kategori: 'Tidak Sehat', alarm: true, probabilitas: null, rekomendasi: null },
+    { hour: 3, value: 48, kategori: 'Tidak Sehat', alarm: true, probabilitas: null, rekomendasi: null },
   ],
 };
 
+function formatJamWIB(dateObj) {
+  const parts = new Intl.DateTimeFormat('id-ID', {
+    timeZone: 'Asia/Jakarta',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(dateObj);
+  const jam = parts.find((p) => p.type === 'hour')?.value ?? '00';
+  const menit = parts.find((p) => p.type === 'minute')?.value ?? '00';
+  return `${jam}.${menit}`;
+}
+
+function parsePredictionsFromBackend(rawPredictions) {
+  if (Array.isArray(rawPredictions) && rawPredictions.length > 0) {
+    return rawPredictions.slice(0, 3).map((item, idx) => {
+      const hour = Number(item.hour ?? item.horizon_jam ?? idx + 1);
+      const rawVal = item.value ?? item.prediksi_pm25 ?? 0;
+      return {
+        hour,
+        value: Number(rawVal),
+        kategori: item.kategori ?? null,
+        alarm: item.alarm_waspada ?? null,
+        probabilitas: item.probabilitas_waspada ?? null,
+        rekomendasi: item.rekomendasi ?? null,
+      };
+    });
+  }
+
+  if (rawPredictions && typeof rawPredictions === 'object') {
+    const list = [1, 2, 3]
+      .map((h) => {
+        const entry = rawPredictions[`t+${h}h`];
+        if (!entry) return null;
+        const val = typeof entry === 'number' ? entry : entry.prediksi_pm25 ?? entry.value;
+        if (val === undefined || val === null || Number.isNaN(Number(val))) return null;
+        return {
+          hour: h,
+          value: Number(val),
+          kategori: typeof entry === 'object' ? entry.kategori ?? null : null,
+          alarm: typeof entry === 'object' ? entry.alarm_waspada ?? null : null,
+          probabilitas: typeof entry === 'object' ? entry.probabilitas_waspada ?? null : null,
+          rekomendasi: typeof entry === 'object' ? entry.rekomendasi ?? null : null,
+        };
+      })
+      .filter(Boolean);
+
+    if (list.length > 0) {
+      return list;
+    }
+  }
+
+  return null;
+}
+
 function App() {
+   //Deklarasi state awal
   const [polutanFile, setPolutanFile] = useState(null);
   const [cuacaFile, setCuacaFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -31,6 +89,8 @@ function App() {
   const [currentDate, setCurrentDate] = useState('');
   const [currentTime, setCurrentTime] = useState('');
   const [forecastData, setForecastData] = useState(INITIAL_PREVIEW_DATA);
+
+
 
   useEffect(() => {
     const updateClock = () => {
@@ -50,9 +110,10 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
+  //fungsi handlePredict untuk mengirim file CSV ke backend dan menerima hasil prediksi
   const handlePredict = async () => {
     if (!polutanFile || !cuacaFile) {
-      setError('Unggah kedua file CSV (Polutan dan Cuaca) terlebih dahulu.');
+      setError('Silakan unggah kedua file CSV (Polutan dan Cuaca) terlebih dahulu.');
       return;
     }
 
@@ -64,30 +125,48 @@ function App() {
       formData.append('file_polutan', polutanFile);
       formData.append('file_cuaca', cuacaFile);
 
-      const response = await fetch('/api/predict', {
+      //send request ke backend
+      const response = await fetch(API_URL, {
         method: 'POST',
         body: formData,
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Terjadi kesalahan pada server backend.');
+      // Respons bisa saja bukan JSON (mis. halaman error HTML) -> jangan jatuh ke catch
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
       }
 
-      if (data.predictions && Array.isArray(data.predictions) && data.predictions.length > 0) {
-        const normalized = data.predictions.slice(0, 3).map((item, idx) => ({
-          hour: item.hour ?? idx + 1,
-          value: item.value,
-        }));
+      if (!response.ok || !data || data.success === false) {
+        console.error('Backend /predict gagal:', response.status, data);
+        setError(
+          data?.error ||
+            data?.message ||
+            `Server peramalan mengembalikan respons tidak valid (HTTP ${response.status}). Periksa log terminal backend.`
+        );
+        return;
+      }
+
+      const normalized = parsePredictionsFromBackend(data.predictions);
+      if (normalized && normalized.length > 0) {
+        const nextCurrent =
+          data.current_pm25 !== undefined && data.current_pm25 !== null
+            ? Number(data.current_pm25)
+            : forecastData.current_pm25;
+
         setForecastData({
-          current_pm25: data.current_pm25 ?? INITIAL_PREVIEW_DATA.current_pm25,
+          current_pm25: Number.isNaN(nextCurrent) ? forecastData.current_pm25 : nextCurrent,
           predictions: normalized,
         });
+      } else {
+        setError('Format hasil prediksi dari server belum sesuai. Silakan coba lagi.');
       }
     } catch (err) {
+      console.error('Gagal menghubungi endpoint /predict:', err);
       setError(
-        err.message || 'Gagal terhubung ke backend Flask. Pastikan server Flask aktif.'
+        'Tidak dapat terhubung ke server peramalan (127.0.0.1:5000). Pastikan backend sudah berjalan (python app.py).'
       );
     } finally {
       setLoading(false);
@@ -101,12 +180,125 @@ function App() {
     (max, item) => (item.value > max.value ? item : max),
     predictions[0]
   );
-
   const deltaPercent =
     currentPm25 > 0
       ? Math.round(((peakItem.value - currentPm25) / currentPm25) * 100)
       : 0;
-  const isDanger = peakItem.value >= DANGER_THRESHOLD;
+  const isDanger = peakItem.alarm ?? peakItem.value >= DANGER_THRESHOLD;
+  const statusLabel =
+    peakItem.kategori ?? (peakItem.value > 55.4 ? 'Tidak Sehat' : peakItem.value >= DANGER_THRESHOLD ? 'Waspada' : 'Baik');
+  const recommendationText =
+    peakItem.rekomendasi ??
+    (isDanger
+      ? 'Masyarakat diimbau membatasi aktivitas luar ruang dan memakai masker.'
+      : 'Aktivitas luar ruang aman dilakukan seperti biasa.');
+
+  const wrapCanvasText = (ctx, text, x, y, maxWidth, lineHeight) => {
+    const words = text.split(' ');
+    let line = '';
+    let currentY = y;
+    for (let n = 0; n < words.length; n++) {
+      const testLine = `${line + words[n]} `;
+      const metrics = ctx.measureText(testLine);
+      if (metrics.width > maxWidth && n > 0) {
+        ctx.fillText(line.trim(), x, currentY);
+        line = `${words[n]} `;
+        currentY += lineHeight;
+      } else {
+        line = testLine;
+      }
+    }
+    if (line.trim()) {
+      ctx.fillText(line.trim(), x, currentY);
+      currentY += lineHeight;
+    }
+    return currentY;
+  };
+
+  // Menggambar poster (kanvas 800x1000). scale > 1 menghasilkan resolusi lebih tinggi untuk cetak.
+  const buatCanvasPoster = (scale = 1) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 800 * scale;
+    canvas.height = 1000 * scale;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.scale(scale, scale);
+
+    const baseTime = new Date();
+    const currentJamStr = formatJamWIB(baseTime);
+    const targetDate = new Date(baseTime.getTime() + Number(peakItem.hour) * 3600 * 1000);
+    const targetJamStr = formatJamWIB(targetDate);
+
+    ctx.fillStyle = '#fcf8f7';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = isDanger ? '#b91c1c' : '#2563eb';
+    ctx.fillRect(0, 0, canvas.width, 18);
+
+    ctx.fillStyle = '#1e293b';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText('DLH KOTA PADANG', 70, 95);
+
+    ctx.fillStyle = isDanger ? '#b91c1c' : '#1d4ed8';
+    ctx.font = 'bold 48px sans-serif';
+    const headline = isDanger
+      ? 'WASPADA LONJAKAN POLUSI UDARA'
+      : `STATUS KUALITAS UDARA: ${statusLabel.toUpperCase()}`;
+    const afterTitleY = wrapCanvasText(ctx, headline, 70, 210, 660, 58);
+
+    ctx.fillStyle = '#334155';
+    ctx.font = '24px sans-serif';
+    ctx.fillText(
+      `Acuan: ${currentJamStr} WIB • Target (t+${peakItem.hour} jam): ${targetJamStr} WIB`,
+      70,
+      afterTitleY + 20
+    );
+
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 26px sans-serif';
+    const probText =
+      peakItem.probabilitas !== null && peakItem.probabilitas !== undefined
+        ? ` • Peluang Waspada: ${peakItem.probabilitas}%`
+        : '';
+    const afterPredY = wrapCanvasText(
+      ctx,
+      `Prediksi PM2.5: ${peakItem.value} µg/m³ (${statusLabel})${probText}`,
+      70,
+      afterTitleY + 62,
+      660,
+      36
+    );
+
+    const boxY = afterPredY + 34;
+    const boxH = 290;
+    ctx.fillStyle = isDanger ? '#fbe9ea' : '#eff6ff';
+    ctx.fillRect(70, boxY, 660, boxH);
+
+    ctx.fillStyle = isDanger ? '#991b1b' : '#1e40af';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('HIMBAUAN UNTUK MASYARAKAT', 110, boxY + 62);
+
+    ctx.fillStyle = '#1e293b';
+    ctx.font = '28px sans-serif';
+    wrapCanvasText(ctx, recommendationText, 110, boxY + 120, 580, 42);
+
+    ctx.fillStyle = '#64748b';
+    ctx.font = '21px sans-serif';
+    ctx.fillText('Dashboard Peringatan Dini PM2.5', 70, 865);
+    ctx.fillText('Dinas Lingkungan Hidup Kota Padang', 70, 898);
+
+    return canvas;
+  };
+
+  // Unduh poster sebagai file PNG
+  const handleDownloadPoster = () => {
+    const canvas = buatCanvasPoster(1);
+    if (!canvas) return;
+    const link = document.createElement('a');
+    link.download = `poster-pm25-dlh-padang-t+${peakItem.hour}h.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  };
 
   // Kalkulasi koordinat SVG otomatis
   const maxVal = Math.max(DANGER_THRESHOLD, ...predictions.map((p) => p.value));
@@ -115,7 +307,6 @@ function App() {
   const yBottom = 195;
   const chartHeight = yBottom - yTop;
   const xCoords = [150, 310, 470];
-
   const getY = (val) => yBottom - (val / maxY) * chartHeight;
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((r) => Math.round(r * maxY));
   const polylinePoints = predictions
@@ -125,7 +316,6 @@ function App() {
 
   return (
     <>
-      {/* TOP NAVBAR */}
       <nav className="top-navbar">
         <div className="nav-left">
           <div className="logo-box">
@@ -153,7 +343,6 @@ function App() {
         </div>
       </nav>
 
-      {/* MAIN DASHBOARD */}
       <div className="dashboard-container">
         <div className="page-header">
           <h4>MONITORING KUALITAS UDARA</h4>
@@ -178,15 +367,28 @@ function App() {
 
               <div className="upload-slots">
                 <div
+                  role="button"
+                  tabIndex={0}
                   className={`upload-box-compact ${polutanFile ? 'uploaded' : ''}`}
-                  onClick={() => document.getElementById('csv-polutan').click()}
+                  onClick={() => document.getElementById('csv-polutan')?.click()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      document.getElementById('csv-polutan')?.click();
+                    }
+                  }}
                 >
                   <input
                     id="csv-polutan"
                     type="file"
-                    accept=".csv"
+                    accept=".csv,text/csv"
                     onChange={(e) => {
-                      if (e.target.files[0]) setPolutanFile(e.target.files[0]);
+                      const picked = e.target.files?.[0] ?? null;
+                      if (picked) {
+                        setError(null);
+                        setPolutanFile(picked);
+                      }
+                      e.target.value = '';
                     }}
                     style={{ display: 'none' }}
                   />
@@ -200,15 +402,28 @@ function App() {
                 </div>
 
                 <div
+                  role="button"
+                  tabIndex={0}
                   className={`upload-box-compact ${cuacaFile ? 'uploaded' : ''}`}
-                  onClick={() => document.getElementById('csv-cuaca').click()}
+                  onClick={() => document.getElementById('csv-cuaca')?.click()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      document.getElementById('csv-cuaca')?.click();
+                    }
+                  }}
                 >
                   <input
                     id="csv-cuaca"
                     type="file"
-                    accept=".csv"
+                    accept=".csv,text/csv"
                     onChange={(e) => {
-                      if (e.target.files[0]) setCuacaFile(e.target.files[0]);
+                      const picked = e.target.files?.[0] ?? null;
+                      if (picked) {
+                        setError(null);
+                        setCuacaFile(picked);
+                      }
+                      e.target.value = '';
                     }}
                     style={{ display: 'none' }}
                   />
@@ -217,7 +432,7 @@ function App() {
                   </div>
                   <div className="upload-text-box">
                     <h4>{cuacaFile ? cuacaFile.name : '2. CSV Data Cuaca'}</h4>
-                    <p>Kolom: time, suhu, kelembapan, tekanan, angin, hujan</p>
+                    <p>Kolom: time, temp, rh, hujan, angin, arah_angin, tekanan</p>
                   </div>
                 </div>
               </div>
@@ -259,16 +474,11 @@ function App() {
                     Prediksi tertinggi: {peakItem.value} µg/m³ ({peakItem.hour} jam ke depan)
                   </strong>
                 </p>
-                <p>
-                  Rekomendasi:{' '}
-                  {isDanger
-                    ? 'Masyarakat diimbau membatasi aktivitas luar ruang dan memakai masker.'
-                    : 'Aktivitas luar ruang aman dilakukan seperti biasa.'}
-                </p>
+                <p>Rekomendasi: {recommendationText}</p>
               </div>
 
-              <button className="btn-dark" onClick={() => window.print()}>
-                <Download size={18} /> Cetak Poster (PNG / PDF)
+              <button type="button" className="btn-dark" onClick={handleDownloadPoster}>
+                <Download size={18} /> Unduh Poster (PNG)
               </button>
             </div>
           </div>
@@ -494,6 +704,7 @@ function App() {
 
               <div style={{ marginTop: 'auto' }}>
                 <button
+                  type="button"
                   className="btn-primary"
                   onClick={handlePredict}
                   disabled={loading || !polutanFile || !cuacaFile}
