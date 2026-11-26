@@ -10,13 +10,12 @@ import {
 } from 'lucide-react';
 import './App.css';
 
-
- // URL API Flask Backend
+// URL API Flask Backend
 const API_URL = 'http://127.0.0.1:5000/predict';
 // Ambang peringatan dini internal sesuai Progress Report 2 (35 µg/m³)
 const DANGER_THRESHOLD = 35;
 
-// Data pratinjau awal (1 jam, 2 jam, 3 jam) sebelum backend mengembalikan hasil baru
+// Data default fallback sebelum backend mengembalikan hasil baru
 const INITIAL_PREVIEW_DATA = {
   current_pm25: 24,
   predictions: [
@@ -81,7 +80,7 @@ function parsePredictionsFromBackend(rawPredictions) {
 }
 
 function App() {
-   //Deklarasi state awal
+  // Deklarasi state awal
   const [polutanFile, setPolutanFile] = useState(null);
   const [cuacaFile, setCuacaFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -89,8 +88,7 @@ function App() {
   const [currentDate, setCurrentDate] = useState('');
   const [currentTime, setCurrentTime] = useState('');
   const [forecastData, setForecastData] = useState(INITIAL_PREVIEW_DATA);
-
-
+  const [hasPredicted, setHasPredicted] = useState(false);
 
   useEffect(() => {
     const updateClock = () => {
@@ -110,7 +108,7 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
-  //fungsi handlePredict untuk mengirim file CSV ke backend dan menerima hasil prediksi
+  // Fungsi handlePredict untuk mengirim file CSV ke backend dan menerima hasil prediksi
   const handlePredict = async () => {
     if (!polutanFile || !cuacaFile) {
       setError('Silakan unggah kedua file CSV (Polutan dan Cuaca) terlebih dahulu.');
@@ -125,7 +123,7 @@ function App() {
       formData.append('file_polutan', polutanFile);
       formData.append('file_cuaca', cuacaFile);
 
-      //send request ke backend
+      // Send request ke backend
       const response = await fetch(API_URL, {
         method: 'POST',
         body: formData,
@@ -160,6 +158,7 @@ function App() {
           current_pm25: Number.isNaN(nextCurrent) ? forecastData.current_pm25 : nextCurrent,
           predictions: normalized,
         });
+        setHasPredicted(true);
       } else {
         setError('Format hasil prediksi dari server belum sesuai. Silakan coba lagi.');
       }
@@ -186,7 +185,8 @@ function App() {
       : 0;
   const isDanger = peakItem.alarm ?? peakItem.value >= DANGER_THRESHOLD;
   const statusLabel =
-    peakItem.kategori ?? (peakItem.value > 55.4 ? 'Tidak Sehat' : peakItem.value >= DANGER_THRESHOLD ? 'Waspada' : 'Baik');
+    peakItem.kategori ??
+    (peakItem.value > 55.4 ? 'Tidak Sehat' : peakItem.value >= DANGER_THRESHOLD ? 'Waspada' : 'Baik');
   const recommendationText =
     peakItem.rekomendasi ??
     (isDanger
@@ -249,7 +249,7 @@ function App() {
     ctx.fillStyle = '#334155';
     ctx.font = '24px sans-serif';
     ctx.fillText(
-      `Acuan: ${currentJamStr} WIB • Target (t+${peakItem.hour} jam): ${targetJamStr} WIB`,
+      `Acuan: ${currentJamStr} WIB • Target (${peakItem.hour} jam ke depan): ${targetJamStr} WIB`,
       70,
       afterTitleY + 20
     );
@@ -292,10 +292,11 @@ function App() {
 
   // Unduh poster sebagai file PNG
   const handleDownloadPoster = () => {
+    if (!hasPredicted) return;
     const canvas = buatCanvasPoster(1);
     if (!canvas) return;
     const link = document.createElement('a');
-    link.download = `poster-pm25-dlh-padang-t+${peakItem.hour}h.png`;
+    link.download = `poster-pm25-dlh-padang-${peakItem.hour}jam.png`;
     link.href = canvas.toDataURL('image/png');
     link.click();
   };
@@ -455,30 +456,57 @@ function App() {
                 </div>
               </div>
 
-              <div className={`alert-card ${isDanger ? '' : 'safe'}`}>
-                <div className="status-tag">
-                  {isDanger ? 'STATUS WASPADA' : 'STATUS AMAN'}
+              {hasPredicted ? (
+                <div className={`alert-card ${isDanger ? '' : 'safe'}`}>
+                  <div className="status-tag">
+                    {isDanger ? 'STATUS WASPADA' : 'STATUS AMAN'}
+                  </div>
+                  <div className="alert-title-row">
+                    <AlertTriangle
+                      size={20}
+                      color={isDanger ? '#dc2626' : '#16a34a'}
+                      fill={isDanger ? '#fecaca' : '#bbf7d0'}
+                    />
+                    <h3>
+                      {isDanger ? 'WASPADA LONJAKAN POLUSI' : 'KUALITAS UDARA TERKENDALI'}
+                    </h3>
+                  </div>
+                  <p>
+                    <strong>
+                      Prediksi tertinggi: {peakItem.value} µg/m³ ({peakItem.hour} jam ke depan)
+                    </strong>
+                  </p>
+                  <p>Rekomendasi: {recommendationText}</p>
                 </div>
-                <div className="alert-title-row">
-                  <AlertTriangle
-                    size={20}
-                    color={isDanger ? '#dc2626' : '#16a34a'}
-                    fill={isDanger ? '#fecaca' : '#bbf7d0'}
-                  />
-                  <h3>
-                    {isDanger ? 'WASPADA LONJAKAN POLUSI' : 'KUALITAS UDARA TERKENDALI'}
-                  </h3>
+              ) : (
+                <div
+                  style={{
+                    border: '1.5px dashed #cbd5e1',
+                    borderRadius: '8px',
+                    padding: '1.5rem',
+                    textAlign: 'center',
+                    color: '#64748b',
+                    fontSize: '0.85rem',
+                    marginBottom: '1rem',
+                    backgroundColor: '#f8fafc',
+                  }}
+                >
+                  Belum ada himbauan. Unggah 2 file CSV dan jalankan forecasting untuk melihat status peringatan dini.
                 </div>
-                <p>
-                  <strong>
-                    Prediksi tertinggi: {peakItem.value} µg/m³ ({peakItem.hour} jam ke depan)
-                  </strong>
-                </p>
-                <p>Rekomendasi: {recommendationText}</p>
-              </div>
+              )}
 
-              <button type="button" className="btn-dark" onClick={handleDownloadPoster}>
-                <Download size={18} /> Unduh Poster (PNG)
+              <button
+                type="button"
+                className="btn-dark"
+                onClick={handleDownloadPoster}
+                disabled={!hasPredicted}
+                style={{
+                  opacity: hasPredicted ? 1 : 0.55,
+                  cursor: hasPredicted ? 'pointer' : 'not-allowed',
+                }}
+              >
+                <Download size={18} />{' '}
+                {hasPredicted ? 'Unduh Poster (PNG)' : 'Jalankan Forecasting untuk Unduh Poster'}
               </button>
             </div>
           </div>
@@ -499,206 +527,236 @@ function App() {
                 </div>
               </div>
 
-              <div className="metrics-grid">
-                <div className="metric-item">
-                  <p>Konsentrasi saat ini</p>
-                  <h2>
-                    {currentPm25}{' '}
-                    <span style={{ fontSize: '0.8rem', color: '#64748b' }}>µg/m³</span>
-                  </h2>
-                </div>
-                <div className="metric-item">
-                  <p>Prediksi tertinggi (3 jam)</p>
-                  <h2 className={isDanger ? 'text-red' : 'text-green'}>
-                    {peakItem.value}{' '}
-                    <span
-                      style={{
-                        fontSize: '0.8rem',
-                        color: isDanger ? '#dc2626' : '#16a34a',
-                      }}
-                    >
-                      µg/m³
-                    </span>
-                  </h2>
-                  <span className="metric-sub">
-                    Terjadi pada {peakItem.hour} jam ke depan
-                  </span>
-                </div>
-                <div className="metric-item">
-                  <p>Perubahan prediksi</p>
-                  <h2 className={deltaPercent > 0 ? 'text-orange' : 'text-green'}>
-                    {deltaPercent >= 0 ? `+${deltaPercent}%` : `${deltaPercent}%`}
-                  </h2>
-                </div>
-                <div className="metric-item">
-                  <p>Status peringatan dini</p>
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <span className={`status-dot ${isDanger ? '' : 'safe'}`}></span>
-                    <span className="status-text">
-                      {isDanger ? 'Waspada' : 'Aman'}
-                    </span>
+              {hasPredicted ? (
+                <>
+                  <div className="metrics-grid">
+                    <div className="metric-item">
+                      <p>Konsentrasi saat ini</p>
+                      <h2>
+                        {currentPm25}{' '}
+                        <span style={{ fontSize: '0.8rem', color: '#64748b' }}>µg/m³</span>
+                      </h2>
+                    </div>
+                    <div className="metric-item">
+                      <p>Prediksi tertinggi (3 jam)</p>
+                      <h2 className={isDanger ? 'text-red' : 'text-green'}>
+                        {peakItem.value}{' '}
+                        <span
+                          style={{
+                            fontSize: '0.8rem',
+                            color: isDanger ? '#dc2626' : '#16a34a',
+                          }}
+                        >
+                          µg/m³
+                        </span>
+                      </h2>
+                      <span className="metric-sub">
+                        Terjadi pada {peakItem.hour} jam ke depan
+                      </span>
+                    </div>
+                    <div className="metric-item">
+                      <p>Perubahan prediksi</p>
+                      <h2 className={deltaPercent > 0 ? 'text-orange' : 'text-green'}>
+                        {deltaPercent >= 0 ? `+${deltaPercent}%` : `${deltaPercent}%`}
+                      </h2>
+                    </div>
+                    <div className="metric-item">
+                      <p>Status peringatan dini</p>
+                      <div style={{ marginTop: '0.5rem' }}>
+                        <span className={`status-dot ${isDanger ? '' : 'safe'}`}></span>
+                        <span className="status-text">
+                          {isDanger ? 'Waspada' : 'Aman'}
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
 
-              {/* Grafik SVG (1 jam, 2 jam, 3 jam) */}
-              <div className="chart-placeholder">
-                <svg
-                  width="100%"
-                  height="100%"
-                  viewBox="0 0 600 245"
-                  style={{ overflow: 'visible' }}
-                >
-                  {yTicks.map((val, i) => {
-                    const y = getY(val);
-                    return (
-                      <g key={i}>
-                        <line
-                          x1="55"
-                          y1={y}
-                          x2="565"
-                          y2={y}
-                          stroke="#f1f5f9"
-                          strokeWidth="2"
-                        />
-                        <text
-                          x="45"
-                          y={y + 4}
-                          fill="#94a3b8"
-                          fontSize="12"
-                          textAnchor="end"
-                        >
-                          {val}
-                        </text>
-                      </g>
-                    );
-                  })}
+                  {/* Grafik SVG (1 jam, 2 jam, 3 jam) */}
+                  <div className="chart-placeholder">
+                    <svg
+                      width="100%"
+                      height="100%"
+                      viewBox="0 0 600 245"
+                      style={{ overflow: 'visible' }}
+                    >
+                      {yTicks.map((val, i) => {
+                        const y = getY(val);
+                        return (
+                          <g key={i}>
+                            <line
+                              x1="55"
+                              y1={y}
+                              x2="565"
+                              y2={y}
+                              stroke="#f1f5f9"
+                              strokeWidth="2"
+                            />
+                            <text
+                              x="45"
+                              y={y + 4}
+                              fill="#94a3b8"
+                              fontSize="12"
+                              textAnchor="end"
+                            >
+                              {val}
+                            </text>
+                          </g>
+                        );
+                      })}
 
-                  <text
-                    x="12"
-                    y="110"
-                    fill="#94a3b8"
-                    fontSize="12"
-                    transform="rotate(-90 12 110)"
-                    textAnchor="middle"
-                  >
-                    PM2.5 (µg/m³)
-                  </text>
+                      <text
+                        x="12"
+                        y="110"
+                        fill="#94a3b8"
+                        fontSize="12"
+                        transform="rotate(-90 12 110)"
+                        textAnchor="middle"
+                      >
+                        PM2.5 (µg/m³)
+                      </text>
 
-                  <line
-                    x1="55"
-                    y1={dangerY}
-                    x2="565"
-                    y2={dangerY}
-                    stroke="#ef4444"
-                    strokeWidth="2"
-                    strokeDasharray="6,4"
-                  />
-                  <rect
-                    x="415"
-                    y={dangerY - 12}
-                    width="150"
-                    height="22"
-                    fill="#fef2f2"
-                    rx="4"
-                  />
-                  <text
-                    x="490"
-                    y={dangerY + 3}
-                    fill="#b91c1c"
-                    fontSize="11"
-                    fontWeight="bold"
-                    textAnchor="middle"
-                  >
-                    Ambang Waspada ({DANGER_THRESHOLD} µg/m³)
-                  </text>
+                      <line
+                        x1="55"
+                        y1={dangerY}
+                        x2="565"
+                        y2={dangerY}
+                        stroke="#ef4444"
+                        strokeWidth="2"
+                        strokeDasharray="6,4"
+                      />
+                      <rect
+                        x="415"
+                        y={dangerY - 12}
+                        width="150"
+                        height="22"
+                        fill="#fef2f2"
+                        rx="4"
+                      />
+                      <text
+                        x="490"
+                        y={dangerY + 3}
+                        fill="#b91c1c"
+                        fontSize="11"
+                        fontWeight="bold"
+                        textAnchor="middle"
+                      >
+                        Ambang Waspada ({DANGER_THRESHOLD} µg/m³)
+                      </text>
 
-                  <polyline
-                    points={polylinePoints}
-                    fill="none"
-                    stroke="#2563eb"
-                    strokeWidth="4"
-                    strokeLinejoin="round"
-                  />
+                      <polyline
+                        points={polylinePoints}
+                        fill="none"
+                        stroke="#2563eb"
+                        strokeWidth="4"
+                        strokeLinejoin="round"
+                      />
 
-                  {predictions.map((item, i) => {
-                    const cx = xCoords[i];
-                    const cy = getY(item.value);
-                    const pointDanger = item.value >= DANGER_THRESHOLD;
-                    return (
-                      <g key={item.hour}>
-                        <text
-                          x={cx}
-                          y={cy - 14}
-                          fill={pointDanger ? '#dc2626' : '#334155'}
-                          fontSize="13"
-                          fontWeight="bold"
-                          textAnchor="middle"
-                        >
-                          {item.value}
-                        </text>
-                        <circle
-                          cx={cx}
-                          cy={cy}
-                          r={pointDanger ? 6 : 5}
-                          fill="white"
-                          stroke={pointDanger ? '#dc2626' : '#2563eb'}
-                          strokeWidth={pointDanger ? 4 : 3}
-                        />
-                        <text
-                          x={cx}
-                          y="218"
-                          fill="#475569"
-                          fontSize="13"
-                          fontWeight="600"
-                          textAnchor="middle"
-                        >
-                          {item.hour} jam
-                        </text>
-                      </g>
-                    );
-                  })}
+                      {predictions.map((item, i) => {
+                        const cx = xCoords[i];
+                        const cy = getY(item.value);
+                        const pointDanger = item.value >= DANGER_THRESHOLD;
+                        return (
+                          <g key={item.hour}>
+                            <text
+                              x={cx}
+                              y={cy - 14}
+                              fill={pointDanger ? '#dc2626' : '#334155'}
+                              fontSize="13"
+                              fontWeight="bold"
+                              textAnchor="middle"
+                            >
+                              {item.value}
+                            </text>
+                            <circle
+                              cx={cx}
+                              cy={cy}
+                              r={pointDanger ? 6 : 5}
+                              fill="white"
+                              stroke={pointDanger ? '#dc2626' : '#2563eb'}
+                              strokeWidth={pointDanger ? 4 : 3}
+                            />
+                            <text
+                              x={cx}
+                              y="218"
+                              fill="#475569"
+                              fontSize="13"
+                              fontWeight="600"
+                              textAnchor="middle"
+                            >
+                              {item.hour} jam
+                            </text>
+                          </g>
+                        );
+                      })}
 
-                  <text
-                    x="310"
-                    y="240"
-                    fill="#64748b"
-                    fontSize="12"
-                    textAnchor="middle"
-                  >
-                    Horizon Prediksi (n jam = n jam ke depan)
-                  </text>
-                </svg>
-              </div>
+                      <text
+                        x="310"
+                        y="240"
+                        fill="#64748b"
+                        fontSize="12"
+                        textAnchor="middle"
+                      >
+                        Horizon Prediksi (n jam = n jam ke depan)
+                      </text>
+                    </svg>
+                  </div>
 
-              {/* Legend */}
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'center',
-                  gap: '2rem',
-                  marginBottom: '1.5rem',
-                  fontSize: '0.85rem',
-                  color: '#64748b',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span
-                    style={{ width: '20px', height: '3px', background: '#2563eb' }}
-                  ></span>{' '}
-                  Prediksi PM2.5
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span
+                  {/* Legend */}
+                  <div
                     style={{
-                      width: '20px',
-                      height: '3px',
-                      borderTop: '2px dashed #ef4444',
+                      display: 'flex',
+                      justifyContent: 'center',
+                      gap: '2rem',
+                      marginBottom: '1.5rem',
+                      fontSize: '0.85rem',
+                      color: '#64748b',
                     }}
-                  ></span>{' '}
-                  Ambang Waspada ({DANGER_THRESHOLD} µg/m³)
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span
+                        style={{ width: '20px', height: '3px', background: '#2563eb' }}
+                      ></span>{' '}
+                      Prediksi PM2.5
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span
+                        style={{
+                          width: '20px',
+                          height: '3px',
+                          borderTop: '2px dashed #ef4444',
+                        }}
+                      ></span>{' '}
+                      Ambang Waspada ({DANGER_THRESHOLD} µg/m³)
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div
+                  style={{
+                    flex: 1,
+                    minHeight: '320px',
+                    border: '1.5px dashed #cbd5e1',
+                    borderRadius: '10px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    textAlign: 'center',
+                    padding: '2rem',
+                    marginBottom: '1.5rem',
+                    color: '#64748b',
+                    backgroundColor: '#f8fafc',
+                  }}
+                >
+                  <BarChart2 size={40} color="#94a3b8" style={{ marginBottom: '0.75rem' }} />
+                  <h4 style={{ margin: '0 0 0.4rem 0', color: '#334155' }}>
+                    Belum Ada Hasil Prediksi
+                  </h4>
+                  <p style={{ margin: 0, fontSize: '0.85rem', maxWidth: '360px' }}>
+                    Unggah file <strong>CSV Data Polutan</strong> dan <strong>CSV Data Cuaca</strong> di panel kiri, lalu klik <strong>Jalankan Forecasting</strong> untuk menampilkan metrik dan grafik tren PM2.5.
+                  </p>
                 </div>
-              </div>
+              )}
 
               {error && <div className="error-banner">{error}</div>}
 
