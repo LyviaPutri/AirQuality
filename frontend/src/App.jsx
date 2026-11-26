@@ -7,6 +7,7 @@ import {
   Info,
   AlertTriangle,
   Download,
+  X,
 } from 'lucide-react';
 import './App.css';
 
@@ -20,21 +21,85 @@ const INITIAL_PREVIEW_DATA = {
   current_pm25: 24,
   predictions: [
     { hour: 1, value: 31, kategori: 'Sedang', alarm: false, probabilitas: null, rekomendasi: null },
-    { hour: 2, value: 39, kategori: 'Tidak Sehat', alarm: true, probabilitas: null, rekomendasi: null },
-    { hour: 3, value: 48, kategori: 'Tidak Sehat', alarm: true, probabilitas: null, rekomendasi: null },
+    { hour: 2, value: 39, kategori: 'Sedang', alarm: true, probabilitas: null, rekomendasi: null },
+    { hour: 3, value: 48, kategori: 'Sedang', alarm: true, probabilitas: null, rekomendasi: null },
   ],
 };
 
-function formatJamWIB(dateObj) {
-  const parts = new Intl.DateTimeFormat('id-ID', {
-    timeZone: 'Asia/Jakarta',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(dateObj);
-  const jam = parts.find((p) => p.type === 'hour')?.value ?? '00';
-  const menit = parts.find((p) => p.type === 'minute')?.value ?? '00';
-  return `${jam}.${menit}`;
+function getFallbackCategory(val) {
+  if (val <= 15.5) return 'Baik';
+  if (val <= 55.4) return 'Sedang';
+  if (val <= 150.4) return 'Tidak Sehat';
+  if (val <= 250.4) return 'Sangat Tidak Sehat';
+  return 'Berbahaya';
+}
+
+function formatTanggalJamWIB(dateObj, shortMonth = false) {
+  const tanggal = dateObj.toLocaleDateString('id-ID', {
+    day: 'numeric',
+    month: shortMonth ? 'short' : 'long',
+    year: 'numeric',
+  });
+  const jam = String(dateObj.getHours()).padStart(2, '0');
+  const menit = String(dateObj.getMinutes()).padStart(2, '0');
+  return `${tanggal}, ${jam}.${menit} WIB`;
+}
+
+// Ekstrak seluruh nilai kolom 'time' dari file CSV Open-Meteo
+async function extractTimestampsFromCsv(file) {
+  const text = await file.text();
+  const lines = text.split(/\r?\n/);
+  let headerIdx = -1;
+  let timeColIdx = -1;
+
+  for (let i = 0; i < Math.min(lines.length, 20); i++) {
+    const cols = lines[i]
+      .split(',')
+      .map((c) => c.trim().replace(/^"|"$/g, '').toLowerCase());
+    const idx = cols.indexOf('time');
+    if (idx !== -1 && cols.length >= 2) {
+      headerIdx = i;
+      timeColIdx = idx;
+      break;
+    }
+  }
+
+  const times = new Set();
+  if (headerIdx === -1) return times;
+
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(',');
+    const rawTime = cols[timeColIdx]?.trim().replace(/^"|"$/g, '');
+    if (rawTime) {
+      times.add(rawTime.replace(' ', 'T'));
+    }
+  }
+  return times;
+}
+
+// Cari timestamp terbaru yang cocok (irisan) di kedua CSV sebagai titik acuan (t0)
+async function getLatestMatchedDate(filePolutan, fileCuaca) {
+  try {
+    const [timesPolutan, timesCuaca] = await Promise.all([
+      extractTimestampsFromCsv(filePolutan),
+      extractTimestampsFromCsv(fileCuaca),
+    ]);
+    const matched = [...timesPolutan].filter((t) => timesCuaca.has(t));
+    if (matched.length === 0) return null;
+
+    matched.sort();
+    const latestIso = matched[matched.length - 1]; // contoh: "2026-07-11T15:00"
+    const [datePart, timePart = '00:00'] = latestIso.split('T');
+    const [year, month, day] = datePart.split('-').map(Number);
+    const [hour, minute] = timePart.split(':').map(Number);
+
+    if (!year || !month || !day || Number.isNaN(hour)) return null;
+    return new Date(year, month - 1, day, hour, minute || 0, 0);
+  } catch {
+    return null;
+  }
 }
 
 function parsePredictionsFromBackend(rawPredictions) {
@@ -88,6 +153,7 @@ function App() {
   const [currentDate, setCurrentDate] = useState('');
   const [currentTime, setCurrentTime] = useState('');
   const [forecastData, setForecastData] = useState(INITIAL_PREVIEW_DATA);
+  const [referenceDate, setReferenceDate] = useState(null);
   const [hasPredicted, setHasPredicted] = useState(false);
 
   useEffect(() => {
@@ -108,6 +174,21 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
+  // Validasi dan simpan file CSV
+  const handleFileSelect = (e, setter) => {
+    const picked = e.target.files?.[0] ?? null;
+    e.target.value = '';
+    if (!picked) return;
+
+    if (!picked.name.toLowerCase().endsWith('.csv')) {
+      setError('Format file tidak didukung. Harap unggah file berformat .csv.');
+      return;
+    }
+
+    setError(null);
+    setter(picked);
+  };
+
   // Fungsi handlePredict untuk mengirim file CSV ke backend dan menerima hasil prediksi
   const handlePredict = async () => {
     if (!polutanFile || !cuacaFile) {
@@ -123,13 +204,14 @@ function App() {
       formData.append('file_polutan', polutanFile);
       formData.append('file_cuaca', cuacaFile);
 
-      // Send request ke backend
-      const response = await fetch(API_URL, {
-        method: 'POST',
-        body: formData,
-      });
+      const [response, matchedRefDate] = await Promise.all([
+        fetch(API_URL, {
+          method: 'POST',
+          body: formData,
+        }),
+        getLatestMatchedDate(polutanFile, cuacaFile),
+      ]);
 
-      // Respons bisa saja bukan JSON (mis. halaman error HTML) -> jangan jatuh ke catch
       let data = null;
       try {
         data = await response.json();
@@ -158,6 +240,7 @@ function App() {
           current_pm25: Number.isNaN(nextCurrent) ? forecastData.current_pm25 : nextCurrent,
           predictions: normalized,
         });
+        setReferenceDate(matchedRefDate);
         setHasPredicted(true);
       } else {
         setError('Format hasil prediksi dari server belum sesuai. Silakan coba lagi.');
@@ -179,14 +262,8 @@ function App() {
     (max, item) => (item.value > max.value ? item : max),
     predictions[0]
   );
-  const deltaPercent =
-    currentPm25 > 0
-      ? Math.round(((peakItem.value - currentPm25) / currentPm25) * 100)
-      : 0;
   const isDanger = peakItem.alarm ?? peakItem.value >= DANGER_THRESHOLD;
-  const statusLabel =
-    peakItem.kategori ??
-    (peakItem.value > 55.4 ? 'Tidak Sehat' : peakItem.value >= DANGER_THRESHOLD ? 'Waspada' : 'Baik');
+  const statusLabel = peakItem.kategori ?? getFallbackCategory(peakItem.value);
   const recommendationText =
     peakItem.rekomendasi ??
     (isDanger
@@ -215,7 +292,7 @@ function App() {
     return currentY;
   };
 
-  // Menggambar poster (kanvas 800x1000). scale > 1 menghasilkan resolusi lebih tinggi untuk cetak.
+  // Menggambar poster (kanvas 800x1000) memakai waktu acuan dari CSV
   const buatCanvasPoster = (scale = 1) => {
     const canvas = document.createElement('canvas');
     canvas.width = 800 * scale;
@@ -224,10 +301,10 @@ function App() {
     if (!ctx) return null;
     ctx.scale(scale, scale);
 
-    const baseTime = new Date();
-    const currentJamStr = formatJamWIB(baseTime);
+    const baseTime = referenceDate ?? new Date();
+    const currentAcuanStr = formatTanggalJamWIB(baseTime, true);
     const targetDate = new Date(baseTime.getTime() + Number(peakItem.hour) * 3600 * 1000);
-    const targetJamStr = formatJamWIB(targetDate);
+    const targetJamStr = formatTanggalJamWIB(targetDate, true);
 
     ctx.fillStyle = '#fcf8f7';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -244,32 +321,31 @@ function App() {
     const headline = isDanger
       ? 'WASPADA LONJAKAN POLUSI UDARA'
       : `STATUS KUALITAS UDARA: ${statusLabel.toUpperCase()}`;
-    const afterTitleY = wrapCanvasText(ctx, headline, 70, 210, 660, 58);
+    const afterTitleY = wrapCanvasText(ctx, headline, 70, 205, 660, 58);
 
     ctx.fillStyle = '#334155';
-    ctx.font = '24px sans-serif';
-    ctx.fillText(
-      `Acuan: ${currentJamStr} WIB • Target (${peakItem.hour} jam ke depan): ${targetJamStr} WIB`,
+    ctx.font = '22px sans-serif';
+    const afterTimeY = wrapCanvasText(
+      ctx,
+      `Acuan Data: ${currentAcuanStr} • Target (${peakItem.hour} jam ke depan): ${targetJamStr}`,
       70,
-      afterTitleY + 20
+      afterTitleY + 18,
+      660,
+      32
     );
 
     ctx.fillStyle = '#0f172a';
     ctx.font = 'bold 26px sans-serif';
-    const probText =
-      peakItem.probabilitas !== null && peakItem.probabilitas !== undefined
-        ? ` • Peluang Waspada: ${peakItem.probabilitas}%`
-        : '';
     const afterPredY = wrapCanvasText(
       ctx,
-      `Prediksi PM2.5: ${peakItem.value} µg/m³ (${statusLabel})${probText}`,
+      `Prediksi PM2.5: ${peakItem.value} µg/m³ (${statusLabel})`,
       70,
-      afterTitleY + 62,
+      afterTimeY + 14,
       660,
       36
     );
 
-    const boxY = afterPredY + 34;
+    const boxY = afterPredY + 30;
     const boxH = 290;
     ctx.fillStyle = isDanger ? '#fbe9ea' : '#eff6ff';
     ctx.fillRect(70, boxY, 660, boxH);
@@ -383,23 +459,43 @@ function App() {
                     id="csv-polutan"
                     type="file"
                     accept=".csv,text/csv"
-                    onChange={(e) => {
-                      const picked = e.target.files?.[0] ?? null;
-                      if (picked) {
-                        setError(null);
-                        setPolutanFile(picked);
-                      }
-                      e.target.value = '';
-                    }}
+                    onChange={(e) => handleFileSelect(e, setPolutanFile)}
                     style={{ display: 'none' }}
                   />
                   <div className="upload-icon-sm">
                     {polutanFile ? <CheckCircle size={20} /> : <CloudUpload size={20} />}
                   </div>
-                  <div className="upload-text-box">
+                  <div className="upload-text-box" style={{ flex: 1, minWidth: 0 }}>
                     <h4>{polutanFile ? polutanFile.name : '1. CSV Data Polutan'}</h4>
                     <p>Kolom: time, pm10, pm2_5, co, no2, so2, o3</p>
                   </div>
+                  {polutanFile && (
+                    <button
+                      type="button"
+                      aria-label="Hapus file polutan"
+                      title="Hapus file"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPolutanFile(null);
+                        setReferenceDate(null);
+                        setHasPredicted(false);
+                        setError(null);
+                      }}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#64748b',
+                        cursor: 'pointer',
+                        padding: '4px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        borderRadius: '4px',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <X size={18} />
+                    </button>
+                  )}
                 </div>
 
                 <div
@@ -418,23 +514,43 @@ function App() {
                     id="csv-cuaca"
                     type="file"
                     accept=".csv,text/csv"
-                    onChange={(e) => {
-                      const picked = e.target.files?.[0] ?? null;
-                      if (picked) {
-                        setError(null);
-                        setCuacaFile(picked);
-                      }
-                      e.target.value = '';
-                    }}
+                    onChange={(e) => handleFileSelect(e, setCuacaFile)}
                     style={{ display: 'none' }}
                   />
                   <div className="upload-icon-sm">
                     {cuacaFile ? <CheckCircle size={20} /> : <CloudUpload size={20} />}
                   </div>
-                  <div className="upload-text-box">
+                  <div className="upload-text-box" style={{ flex: 1, minWidth: 0 }}>
                     <h4>{cuacaFile ? cuacaFile.name : '2. CSV Data Cuaca'}</h4>
                     <p>Kolom: time, temp, rh, hujan, angin, arah_angin, tekanan</p>
                   </div>
+                  {cuacaFile && (
+                    <button
+                      type="button"
+                      aria-label="Hapus file cuaca"
+                      title="Hapus file"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCuacaFile(null);
+                        setReferenceDate(null);
+                        setHasPredicted(false);
+                        setError(null);
+                      }}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#64748b',
+                        cursor: 'pointer',
+                        padding: '4px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        borderRadius: '4px',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <X size={18} />
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -517,7 +633,7 @@ function App() {
               className="card"
               style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
             >
-              <div className="chart-header-row">
+              <div className="chart-header-row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
                 <div className="card-header-flex" style={{ marginBottom: 0 }}>
                   <div className="number-badge">2</div>
                   <div className="card-title-box">
@@ -525,6 +641,20 @@ function App() {
                     <p>Proyeksi konsentrasi partikulat 1 hingga 3 jam ke depan</p>
                   </div>
                 </div>
+                {hasPredicted && referenceDate && (
+                  <div
+                    style={{
+                      fontSize: '0.78rem',
+                      color: '#334155',
+                      backgroundColor: '#f1f5f9',
+                      padding: '0.35rem 0.75rem',
+                      borderRadius: '6px',
+                      fontWeight: 500,
+                    }}
+                  >
+                    Acuan data: <strong>{formatTanggalJamWIB(referenceDate)}</strong>
+                  </div>
+                )}
               </div>
 
               {hasPredicted ? (
@@ -555,10 +685,11 @@ function App() {
                       </span>
                     </div>
                     <div className="metric-item">
-                      <p>Perubahan prediksi</p>
-                      <h2 className={deltaPercent > 0 ? 'text-orange' : 'text-green'}>
-                        {deltaPercent >= 0 ? `+${deltaPercent}%` : `${deltaPercent}%`}
+                      <p>Kategori kualitas udara</p>
+                      <h2 style={{ fontSize: '1.35rem', color: isDanger ? '#dc2626' : '#0f172a' }}>
+                        {statusLabel}
                       </h2>
+                      <span className="metric-sub">Berdasarkan prediksi tertinggi</span>
                     </div>
                     <div className="metric-item">
                       <p>Status peringatan dini</p>
@@ -696,7 +827,7 @@ function App() {
                         fontSize="12"
                         textAnchor="middle"
                       >
-                        Horizon Prediksi (n jam = n jam ke depan)
+                        Horizon Prediksi
                       </text>
                     </svg>
                   </div>
@@ -707,7 +838,7 @@ function App() {
                       display: 'flex',
                       justifyContent: 'center',
                       gap: '2rem',
-                      marginBottom: '1.5rem',
+                      marginBottom: '0.75rem',
                       fontSize: '0.85rem',
                       color: '#64748b',
                     }}
@@ -728,6 +859,19 @@ function App() {
                       ></span>{' '}
                       Ambang Waspada ({DANGER_THRESHOLD} µg/m³)
                     </div>
+                  </div>
+
+                  {/* Catatan Kaki 5 Kategori PM2.5 */}
+                  <div
+                    style={{
+                      textAlign: 'center',
+                      fontSize: '0.75rem',
+                      color: '#64748b',
+                      marginBottom: '1.25rem',
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    <strong>Kategori PM2.5 (µg/m³):</strong> Baik (0–15,5) • Sedang (15,6–55,4) • Tidak Sehat (55,5–150,4) • Sangat Tidak Sehat (150,5–250,4) • Berbahaya (&gt;250,4)
                   </div>
                 </>
               ) : (
